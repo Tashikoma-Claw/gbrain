@@ -1,0 +1,5 @@
+{
+  "ingest_raw": true,
+  "source_ids": ["vault", "notion-snapshot", "notion-meetings", "agentmail"],
+  "wiki_import": false
+}
