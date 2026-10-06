@@ -1,0 +1,20 @@
+{"family": "title-substring", "query": "Acme Example client hub", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "title-substring", "query": "Widget Co project hub", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "title-substring", "query": "Example renewal note", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "title-substring", "query": "Cedar example account page", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "generic-to-named", "query": "the payments client we track in crm", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "generic-to-named", "query": "our logistics project hub", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "generic-to-named", "query": "the founder page for the example company", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "alias-synonym", "query": "short name for the acme-example account", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "alias-synonym", "query": "nickname for the widget-co project", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "alias-synonym", "query": "what we call fund-a in the crm", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "multi-chunk-dilution", "query": "long client history for acme-example", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "multi-chunk-dilution", "query": "multi section project plan for widget-co", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "short-vs-rich", "query": "acme mrr", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "short-vs-rich", "query": "what is the monthly revenue note on the acme-example client hub", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "graph-relationship", "query": "who works with alice-example on the widget-co project", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "graph-relationship", "query": "which project is charlie-example waiting on", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "concept-paraphrase", "query": "open commercial commitment with no owner", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "concept-paraphrase", "query": "stale embedding backlog on the wiki", "relevant": [], "stub": true, "notes": "Fill relevant with the live wiki slug before scoring."}
+{"family": "hard-negative", "query": "password for the example account", "relevant": [], "forbidden": [], "stub": true, "notes": "Fill forbidden with slugs that must not rank. Empty forbidden is not a score."}
+{"family": "hard-negative", "query": "api key stored in the example vault", "relevant": [], "forbidden": [], "stub": true, "notes": "Fill forbidden with slugs that must not rank. Empty forbidden is not a score."}

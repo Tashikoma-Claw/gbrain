@@ -18,7 +18,7 @@ Search mode stays whatever the box already has (`conservative`). These scripts d
 
 ## Loop J / serve
 
-Serve on `:18792` is box runtime. `gbrain-restart-serves.sh` remains the owner. Do not replace that script and do not start a second serve. Dream, backup, and hygiene stop a process only when its command line is `gbrain serve` on that port, run one exclusive command, then call the restart script. The hourly watchdog lock is a separate problem; this package does not change it.
+Serve on `:18792` is box runtime. `gbrain-restart-serves.sh` remains the owner. Do not replace that script and do not start a second serve. Dream, backup, doctor, and embed stop a process only when its command line is `gbrain serve` on that port, run one exclusive command, then call the restart script. Phase 2 splits the locks; see [Phase 2](#phase-2).
 
 ## 1. Copy
 
@@ -91,7 +91,7 @@ crontab -l
 Order:
 
 1. `02:28` dream (`gbrain dream --source default`)
-2. `03:17` backup (same lock, waits if dream is still running)
+2. `03:17` backup (waits on the long lock if dream is still running; the snapshot uses the short lock)
 3. `04:17` `gbrain doctor --json` and `gbrain check-update --json`
 4. `:47` outside 02:00–03:59, multi-source delta
 5. Notion export at 01:10, 07:10, 13:10, 19:10, then the delta syncs the markdown
@@ -114,4 +114,145 @@ GBRAIN_HOME=/home/box/.gbrain-homes/ingest gbrain sources list
 gbrain sources list
 ```
 
-Expect `NIGHTLY_EXIT=0`, dream on source `default`, backup status showing the wiki remote, ingest sources with last-sync times, and the wiki list still `default` as the federated search surface. `curl 127.0.0.1:18792/health` is the serve check after Loop J; this package only stops and starts that process around dream, backup, and doctor.
+Expect `NIGHTLY_EXIT=0`, dream on source `default`, backup status showing the wiki remote, ingest sources with last-sync times, and the wiki list still `default` as the federated search surface. `curl 127.0.0.1:18792/health` is the serve check after Loop J; this package only stops and starts that process around dream, backup, doctor, and the hourly stale embed.
+
+## Phase 2
+
+Phase 2 is the same package. It does not replace Phase 0. Apply it on the box after the Phase 0 copy. A cloud checkout does not run dream, doctor, embed, or backup against the live brain.
+
+### Locks
+
+| Lock | File | Who holds it | Serve |
+|---|---|---|---|
+| Long | `/home/box/brain-os/state/brain-ops.lock` | Dream, and `loop-entry.sh` for Loop | Dream may keep serve down for the whole dream. Loop does not stop serve. |
+| Short | `/home/box/brain-os/state/brain-ops-db.lock` | Doctor, embed, the backup snapshot | Stopped only while this lock is held. Outside dream the window is at most 20 minutes (`SERVE_GAP_MAX_SECONDS`, default 1200). `timeout` kills that `gbrain` process when the window expires, then the trap starts serve again. |
+
+Every serve-stop path installs an EXIT/INT/TERM trap that calls `gbrain-restart-serves.sh` if serve was stopped or if `state/serve-stopped-pid` is still there. Loop should be started as `loop-entry.sh <command>` so that trap still runs when a child leaves the stamp behind.
+
+Dream takes the long lock first, then the short lock, and passes `unlimited`. Doctor, embed, and the snapshot pass `limited`. Backup still waits on the long lock so 03:17 does not snapshot through a running dream; the snapshot itself uses the short lock.
+
+### Copy
+
+```bash
+install -m 0755 ops/yh-brain-box/scripts/gbrain-embed-stale.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/gbrain-hot-pack-rebuild.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/build_hot_packs.py /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/hub-diff.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/hub-mirror-checkout-to-vault.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/hub_align.py /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/writer-manifest-transfer.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/ingest-finish-tail.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/notion-page-split-plan.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/notion_page_split_plan.py /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/gbrain-version-check.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/legacy-marker-scan.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/loop-entry.sh /home/box/brain-os/bin/
+install -m 0644 ops/yh-brain-box/lib/box-ops-common.sh /home/box/brain-os/scripts/box-ops-common.sh
+install -m 0644 ops/yh-brain-box/TARGET_VERSION /home/box/brain-os/state/TARGET_VERSION
+```
+
+Re-copy the Phase 0 scripts in the same pass. They now take the short lock. Leave `gbrain-restart-serves.sh` in place.
+
+Refresh `box.env` from `env/box.env.example` (paths only). Add `VOYAGE_API_KEY` to the existing `sg.env` if embed does not already see it. Embeddings stay on Voyage. Zhipu stays the facts/chat key. Do not commit either file.
+
+`EMBED_CONSENT=yes` in `box.env` is required before the hourly embed will call Voyage. Until then the script exits 3 and does not stop serve.
+
+### Cron
+
+Merge the new lines from `cron/crontab.snippet`. Do not add `gbrain upgrade`. Do not add a second dream or backup line.
+
+| When | What |
+|---|---|
+| `:12` outside 02:00–03:59 | `gbrain embed --stale --batch-size 200`. Never `--all`, never `--catch-up`. |
+| `:55` outside that window | Hot-pack rebuild, no-op until approved. |
+| Sunday 05:17 | Version check against 0.60.82. Writes the manual upgrade command. Does not run it. |
+| Sunday 05:40 | Hub diff (read-only). |
+
+Doctor stays at 04:17. It archives JSON to `state/logs/YYYY-MM-DD/doctor.json` and writes one line to `state/health.status`: `ok`, `warn`, or `fail`, then a timestamp. `gbrain doctor` still decides the process exit (`unhealthy` is non-zero). Warnings show up in that file.
+
+### Hot packs
+
+Today the box rebuilds packs with `brain-os/scripts/build_hot_packs.py` from vault `crm/client-*.md` into `/home/box/codex-harness/g2-sync/hot-packs/accounts.slim.json`. The packaged script is that job, with the vault and the output path taken from the environment.
+
+It runs only when both are true:
+
+- `state/hot-pack-approve.json` has `"rebuild": true` (see `state/hot-pack-approve.example.json`)
+- `state/multi-source-preview-latest.json` has `"ok": true`
+
+That approval does not import the vault into the wiki. New client and project slugs show up on the next successful delta plus this cron. A missing vault prints `HOT_PACK_SKIP` and exits 0.
+
+### Hubs
+
+Primary path: checkout to vault, dry-run unless `--apply`.
+
+```bash
+/home/box/brain-os/bin/hub-diff.sh
+/home/box/brain-os/bin/hub-mirror-checkout-to-vault.sh
+/home/box/brain-os/bin/hub-mirror-checkout-to-vault.sh --apply
+```
+
+The mirror copies hub files that differ and does not delete vault-only files. It refuses `writer_manifest` and symlinks.
+
+Optional other path: `gbrain sources inspect` from the Phase 0 delta cron previews a brain import. It does not copy hubs.
+
+`writer-manifest-transfer.sh` is not on the cron. It exits 3 unless `--apply`, `WRITER_MANIFEST_TRANSFER=yes`, `--src`, and `--dest` are all set. A destination inside the vault also needs `--allow-vault`. Do not point that helper at the vault as part of a routine sync.
+
+### Ingest tail and page splits
+
+On 2026-10-04 the ingest sync walked the vault and Notion markdown and stopped before the last batch and the link extract. Pages sat on the ingest brain without mention links. Wiki serve was not the writer.
+
+```bash
+# report only
+/home/box/brain-os/bin/ingest-finish-tail.sh --check
+# after you agree; never embeds
+/home/box/brain-os/bin/ingest-finish-tail.sh --apply --links
+```
+
+Install `state/ingest-tail.example.json` as `state/ingest-tail.json` only while that tail is still stuck. Remove it when the sync has finished. Without the file the helper exits 0.
+
+Oversized notion-wiki pages: [page-split.md](page-split.md). The planner does not edit files.
+
+### Retired marker and 0.60.82
+
+Packaged scripts do not name the retired source. On the live box:
+
+```bash
+/home/box/brain-os/bin/legacy-marker-scan.sh /home/box/brain-os/bin /home/box/brain-os/scripts
+```
+
+Replace any flagged copy with the matching script from this package. Do not delete `gbrain-restart-serves.sh`.
+
+Check the installed CLI and upgrade only by hand:
+
+```bash
+gbrain --version
+gbrain check-update --json
+# when you mean it, and not from cron:
+gbrain upgrade
+```
+
+`gbrain-version-check.sh` writes `state/version-check.txt`. `VERSION_BEHIND` means the box is older than 0.60.82. The file names `gbrain upgrade`. The cron line does not run it.
+
+### Rollback
+
+```bash
+crontab -l > /home/box/brain-os/state/crontab.pre-phase2.bak
+cp -a /home/box/brain-os/bin /home/box/brain-os/bin.pre-phase2.bak
+# restore
+cp -a /home/box/brain-os/bin.pre-phase2.bak/. /home/box/brain-os/bin/
+crontab /home/box/brain-os/state/crontab.pre-phase2.bak
+```
+
+Take those copies before the Phase 2 install. Restoring the crontab removes the embed, hot-pack, version, and hub-diff lines. Serve returns to whatever `gbrain-restart-serves.sh` already does.
+
+### Checks
+
+```bash
+bash ops/yh-brain-box/test/smoke.sh
+bash ops/yh-brain-box/test/smoke-phase2.sh
+# on the box, after a doctor run
+cat /home/box/brain-os/state/health.status
+curl -fsS 127.0.0.1:18792/health
+```
+
+`health.status` is one line, `ok`, `warn`, or `fail`, then a timestamp. Embed logs `EMBED_EXIT=` and must not contain `--all`.

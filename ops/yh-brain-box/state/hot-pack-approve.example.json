@@ -1,0 +1,4 @@
+{
+  "rebuild": true,
+  "note": "Rebuild hot packs from vault and checkout hubs after a successful multi-source delta. This does not import the vault into the wiki brain."
+}

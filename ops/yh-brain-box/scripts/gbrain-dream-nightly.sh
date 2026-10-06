@@ -6,7 +6,12 @@
 #   stop the single :18792 serve → gbrain dream --source default → start serve
 # via the existing gbrain-restart-serves.sh. Do not start a second serve.
 #
-# Retired: source yh-brain, Supabase GBRAIN_DATABASE_URL preflight, Mumbai.
+# Locks: the long lock (brain-ops.lock) for the whole dream, and the short
+# DB lock (brain-ops-db.lock) while serve is down. Dream is the one job
+# allowed to keep serve down longer than 20 minutes. The EXIT trap still
+# restarts serve.
+#
+# Retired: any source other than default, Supabase GBRAIN_DATABASE_URL, Mumbai.
 set -euo pipefail
 umask 077
 
@@ -62,22 +67,18 @@ if ! box_ops_lock_nowait; then
   exit 1
 fi
 
-serve_stopped=0
-serve_restarted=0
-cleanup() {
-  local rc=$?
-  if [[ "$serve_stopped" == "1" && "$serve_restarted" == "0" ]]; then
-    serve_restarted=1
-    box_ops_start_wiki_serve || rc=1
-  fi
+on_dream_exit() {
+  local rc="${1:-1}"
   printf '%s\n' "$rc" > "$STATE_DIR/dream-last-exit"
   box_ops_log "NIGHTLY_EXIT=$rc"
-  exit "$rc"
 }
-trap cleanup EXIT
+BOX_OPS_EXIT_HOOK=on_dream_exit
+box_ops_serve_guard_on
 
-box_ops_stop_wiki_serve
-serve_stopped=1
+if ! box_ops_serve_stop_begin unlimited "${DREAM_DB_LOCK_WAIT_SECONDS:-1200}"; then
+  printf '%s\n' "1" > "$STATE_DIR/dream-last-exit"
+  exit 1
+fi
 
 args=(dream --source default)
 if [[ -n "${DREAM_PHASES:-}" ]]; then
@@ -102,6 +103,5 @@ set +e
 box_ops_gbrain "${args[@]}" --json > "$STATE_DIR/dream-last.json"
 rc=$?
 set -e
-box_ops_start_wiki_serve || rc=1
-serve_restarted=1
+box_ops_serve_stop_end || rc=1
 exit "$rc"
