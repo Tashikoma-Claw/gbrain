@@ -1,0 +1,15 @@
+# YH brain-box Phase 0. Times are the box local clock (Asia/Hong_Kong).
+# Install by editing crontab; do not wipe unrelated lines.
+# Dream, backup, and hygiene share brain-ops.lock. Order is dream, then
+# backup, then doctor. The delta cron stays outside that window.
+# Scripts source ~/.gbrain/sg.env themselves. Do not put keys in crontab.
+# gbrain-restart-serves.sh is already the :18792 owner; do not add a second serve.
+SHELL=/bin/bash
+PATH=/home/box/.bun/bin:/usr/local/bin:/usr/bin:/bin
+
+28 2 * * * /home/box/brain-os/bin/gbrain-dream-nightly.sh >> /home/box/brain-os/logs/dream-nightly.log 2>&1
+17 3 * * * /home/box/brain-os/bin/backup-push.sh >> /home/box/brain-os/logs/backup-push.log 2>&1
+17 4 * * * /home/box/brain-os/bin/gbrain-daily-hygiene.sh >> /home/box/brain-os/logs/daily-hygiene.log 2>&1
+47 4-23,0-1 * * * /home/box/brain-os/bin/gbrain-multi-source-delta.sh >> /home/box/brain-os/logs/multi-source-delta.log 2>&1
+10 1,7,13,19 * * * /home/box/brain-os/bin/notion-delta.sh >> /home/box/brain-os/logs/notion-delta.log 2>&1
+25 7 * * * /home/box/brain-os/bin/pipeline-digest.sh >> /home/box/brain-os/logs/pipeline-digest.log 2>&1
