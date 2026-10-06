@@ -72,9 +72,14 @@ export async function runReindexAliases(engine: BrainEngine, args: string[]): Pr
       continue;
     }
     try {
-      if (aliasNorms.length) await engine.setPageAliases(ref.slug, ref.source_id, aliasNorms);
-      const derived = await derivedWrite(ref.source_id, tx => writeDerivedAliases(tx, ref.source_id,
-        { slug: ref.slug, title: page.title, type: page.type, compiled_truth: page.compiled_truth, timeline: page.timeline }, { policy: mentionPolicy }));
+      // Frontmatter rows and derived rows share one coordinated transaction.
+      // page_aliases is guarded; writing the frontmatter set outside that
+      // transaction refuses with writer_coordinator_required while serve is up.
+      const derived = await derivedWrite(ref.source_id, async tx => {
+        if (aliasNorms.length) await tx.setPageAliases(ref.slug, ref.source_id, aliasNorms);
+        return writeDerivedAliases(tx, ref.source_id,
+          { slug: ref.slug, title: page.title, type: page.type, compiled_truth: page.compiled_truth, timeline: page.timeline }, { policy: mentionPolicy });
+      });
       if (aliasNorms.length || derived) pagesWithAliases++;
       aliasesWritten += aliasNorms.length + derived;
     } catch (e) {

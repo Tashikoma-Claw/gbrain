@@ -5,8 +5,10 @@
  */
 import type { BrainEngine } from '../core/engine.ts';
 import type { GBrainConfig } from '../core/config.ts';
+import { readFileSync } from 'node:fs';
 import { RELINK_DEFAULT_LIMIT, RELINK_DEFAULT_MAX_USD, runFactsRelink, type RelinkOptions, type RelinkReport } from '../core/facts/relink.ts';
 import { RELINK_REASONS, type RelinkReason } from '../core/facts/relink-reasons.ts';
+import { LINK_REASONS, parseLinkJsonl, runFactsLink, type LinkMapping, type LinkReport } from '../core/facts/link.ts';
 
 export function factsHelpText(): string {
   return `Usage: gbrain facts <subcommand>
@@ -14,6 +16,8 @@ export function factsHelpText(): string {
 Subcommands:
   relink    Link facts saved without an entity to the person, company or
             project they are about, onto that entity page's ## Facts fence.
+  link      Set or override one fact's entity page, or apply a JSONL mapping.
+            Use this when you already know the page. Relink asks a model.
 
 gbrain facts relink [flags]
   --source <id>          Source to repair (default: the resolved source)
@@ -29,10 +33,24 @@ gbrain facts relink [flags]
   --examples <n>         Example facts per outcome (default 3)
   --json                 Machine-readable report (schema_version ${1})
 
-Relink never creates pages and never supersedes a fact. Exact duplicates are
-retired (expired, kept in history). Linked facts are queued for the System One
-conflict sweep when that slot is on. Free tiers cost nothing; the model tier
-uses facts.extraction_model and stops at --max-usd.`;
+gbrain facts link <fact-id> <page-slug> [flags]
+gbrain facts link --file <mappings.jsonl> [flags]
+  --source <id>          Source of the fact and the page (default: the resolved source)
+  --file <path>          JSONL of {"fact_id": <id>, "slug": "<page-slug>"}; "-" reads stdin
+  --dry-run              Show what would change; writes nothing
+  --no-conflict-queue    Do not queue linked facts for the conflict sweep
+  --json                 Machine-readable report (schema_version ${1})
+
+Relink and link never create pages and never supersede a fact. The target page
+must already exist in that source. Exact duplicates are retired (expired, kept
+in history). A fact that lives on another page's fence is moved off it first.
+Linked facts are queued for the System One conflict sweep when that slot is on.
+Link does not call a model. Relink's free tiers cost nothing; its model tier
+uses facts.extraction_model and stops at --max-usd.
+
+On PGLite, one process owns the database file. If gbrain serve holds it, this
+command fails with pglite_busy instead of writing around the lock. On a managed
+brain the write goes through the same coordinator as other page writes.`;
 }
 
 interface ParsedArgs { opts: Omit<RelinkOptions, 'config'>; json: boolean; error?: string }
@@ -124,6 +142,72 @@ export function formatRelinkReport(report: RelinkReport, args: string[]): string
   return lines.join('\n');
 }
 
+function formatLinkReport(report: LinkReport, applyHint: string): string {
+  const lines: string[] = [];
+  const verb = report.dry_run ? 'DRY RUN: would link' : 'Linked';
+  const retired = report.dry_run ? 'would retire' : 'retired';
+  lines.push(`${verb} ${report.linked} fact(s) in source ${report.source_id}` +
+    `${report.moved ? ` (${report.moved} moved off another page)` : ''}; ${report.already_linked} already linked; ${report.deduped} exact duplicate(s) ${retired}.`);
+  if (!report.dry_run && report.linked) lines.push(`Conflict sweep: ${report.queued_for_conflict} queued.`);
+  for (const row of report.results) {
+    if (row.status === 'skipped') lines.push(`  #${row.fact_id} ${row.reason}: ${LINK_REASONS[row.reason ?? ''] ?? row.reason}`);
+    else if (row.status === 'already_linked') lines.push(`  #${row.fact_id} already linked to ${row.slug}`);
+    else lines.push(`  #${row.fact_id} ${row.status === 'deduped' ? (report.dry_run ? 'duplicate, would retire onto' : 'duplicate, retired onto') : '->'} ${row.slug}${row.moved_from ? ` (from ${row.moved_from})` : ''}`);
+  }
+  if (report.dry_run && (report.linked || report.deduped)) lines.push(`Apply with:\n  ${applyHint}`);
+  return lines.join('\n');
+}
+
+function parseLinkArgs(args: string[], sourceId: string): { mappings?: LinkMapping[]; dryRun: boolean; json: boolean; conflictQueue: boolean; sourceId: string; applyHint: string; error?: string } {
+  let dryRun = false;
+  let json = false;
+  let conflictQueue = true;
+  let file: string | undefined;
+  const positional: string[] = [];
+  const kept: string[] = [];
+  try {
+    for (let i = 0; i < args.length; i++) {
+      const a = args[i]!;
+      if (a === '--json') { json = true; kept.push(a); }
+      else if (a === '--dry-run') { dryRun = true; kept.push(a); }
+      else if (a === '--no-conflict-queue') { conflictQueue = false; kept.push(a); }
+      else if (a === '--source') {
+        const v = args[i + 1];
+        if (v === undefined || v.startsWith('--')) throw new Error('--source requires a value');
+        sourceId = v;
+        kept.push(a, v);
+        i++;
+      } else if (a === '--file') {
+        const v = args[i + 1];
+        if (v === undefined || (v.startsWith('--') && v !== '-')) throw new Error('--file requires a path, or - for stdin');
+        file = v;
+        kept.push(a, v);
+        i++;
+      } else if (a.startsWith('--')) throw new Error(`unknown flag ${a}`);
+      else positional.push(a);
+    }
+    let mappings: LinkMapping[];
+    if (file !== undefined) {
+      if (positional.length) throw new Error('pass either <fact-id> <page-slug> or --file, not both');
+      const text = file === '-' ? readFileSync(0, 'utf8') : readFileSync(file, 'utf8');
+      const parsed = parseLinkJsonl(text);
+      if ('error' in parsed) throw new Error(parsed.error);
+      mappings = parsed.mappings;
+    } else {
+      if (positional.length !== 2) throw new Error('usage: gbrain facts link <fact-id> <page-slug> or gbrain facts link --file <mappings.jsonl>');
+      const id = Number(positional[0]);
+      if (!Number.isSafeInteger(id) || id < 1) throw new Error('fact-id must be a positive integer');
+      const parsed = parseLinkJsonl(JSON.stringify({ fact_id: id, slug: positional[1] }));
+      if ('error' in parsed) throw new Error(parsed.error);
+      mappings = parsed.mappings;
+    }
+    const applyHint = `gbrain facts link ${[...kept.filter(a => a !== '--dry-run'), ...positional].join(' ')}`.trimEnd();
+    return { mappings, dryRun, json, conflictQueue, sourceId, applyHint };
+  } catch (err) {
+    return { dryRun, json, conflictQueue, sourceId, applyHint: '', error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /** Exit code: 0 for complete and partial runs (limit or budget), 1 for usage errors. */
 export async function runFactsCommand(engine: BrainEngine, args: string[], config: GBrainConfig, sourceId: string): Promise<number> {
   const sub = args[0];
@@ -131,9 +215,24 @@ export async function runFactsCommand(engine: BrainEngine, args: string[], confi
     console.log(factsHelpText());
     return 0;
   }
-  if (sub !== 'relink') {
+  if (sub !== 'relink' && sub !== 'link') {
     console.error(`gbrain facts: unknown subcommand ${sub}\n\n${factsHelpText()}`);
     return 1;
+  }
+  if (sub === 'link') {
+    const rest = args.slice(1);
+    if (rest.includes('--help') || rest.includes('-h')) { console.log(factsHelpText()); return 0; }
+    const parsed = parseLinkArgs(rest, sourceId);
+    if (parsed.error || !parsed.mappings) {
+      console.error(`gbrain facts link: ${parsed.error ?? 'no mappings'}`);
+      return 1;
+    }
+    const report = await runFactsLink(engine, {
+      sourceId: parsed.sourceId, mappings: parsed.mappings, dryRun: parsed.dryRun,
+      conflictQueue: parsed.conflictQueue, config,
+    });
+    console.log(parsed.json ? JSON.stringify(report, null, 2) : formatLinkReport(report, parsed.applyHint));
+    return 0;
   }
   const rest = args.slice(1);
   if (rest.includes('--help') || rest.includes('-h')) {

@@ -36,9 +36,20 @@ import { appendContextNote } from './subject-infer.ts';
 
 export const RELINK_OPERATION = 'relink_facts';
 
-/** One fact in a relink request: its pinned row hash and how its subject was found. */
-export interface RelinkIntentFact { id: number; hash: string; tier: string; model: string | null; note: string }
-export interface RelinkIntent { kind: 'relink_facts'; run_id: string; queue_conflict: boolean; facts: RelinkIntentFact[] }
+/**
+ * One fact in a relink request: its pinned row hash and how its subject was found.
+ * `from_entity` is set only for an explicit operator link (`gbrain facts link`):
+ * the entity the row named when it was pinned, null when it was unlinked.
+ */
+export interface RelinkIntentFact { id: number; hash: string; tier: string; model: string | null; note: string; from_entity?: string | null }
+export interface RelinkIntent {
+  kind: 'relink_facts';
+  run_id: string;
+  queue_conflict: boolean;
+  facts: RelinkIntentFact[];
+  /** Operator-supplied targets. A database-only row may already name an entity; `from_entity` is pinned with the hash. */
+  explicit?: boolean;
+}
 
 export interface RelinkGroupOutcome {
   linked: Array<{ id: number; row_num: number }>;
@@ -56,6 +67,7 @@ export type RelinkSkipReason = 'revision_conflict' | 'withdrawn' | 'claim_unfenc
 
 type Classified =
   | { id: number; action: 'link'; value: Record<string, unknown> }
+  | { id: number; action: 'align'; value: Record<string, unknown> }
   | { id: number; action: 'retire'; duplicateOf: number }
   | { id: number; action: 'skip'; reason: RelinkSkipReason };
 
@@ -92,18 +104,35 @@ function isActiveUnlinked(v: Record<string, unknown>, now: number): boolean {
     && (v.valid_until === null || new Date(String(v.valid_until)).getTime() > now);
 }
 
+/** Explicit link: the pinned entity still matches, and the row is database-only or already on this page's fence. */
+function isExplicitCandidate(v: Record<string, unknown>, now: number, fact: RelinkIntentFact, target: string): boolean {
+  const live = v.expired_at === null && (v.valid_until === null || new Date(String(v.valid_until)).getTime() > now);
+  if (!live || (v.entity_slug ?? null) !== (fact.from_entity ?? null)) return false;
+  if (v.row_num === null && v.source_markdown_slug === null) return true;
+  return v.source_markdown_slug === target && v.row_num !== null;
+}
+
 async function classify(db: BrainEngine, row: WriteRequest, intent: RelinkIntent, lock: boolean): Promise<Classified[]> {
   const current = await readFacts(db, row.source_id, intent.facts.map(f => f.id), lock);
   const now = Date.now();
+  const explicit = intent.explicit === true;
   const seen = new Map<string, { id: number; visibility: string }>();
   const out: Classified[] = [];
   for (const f of intent.facts) {
     const snap = current.find(c => c.id === f.id);
-    if (!snap || relinkFactHash(snap) !== f.hash || !isActiveUnlinked(snap.value, now)) {
+    const eligible = snap !== undefined && (explicit ? isExplicitCandidate(snap.value, now, f, row.slug) : isActiveUnlinked(snap.value, now));
+    if (!snap || relinkFactHash(snap) !== f.hash || !eligible) {
       out.push({ id: f.id, action: 'skip', reason: 'revision_conflict' });
       continue;
     }
     const v = snap.value;
+    // Already on this page's fence: only the entity pointer moves. A new fence row would duplicate it.
+    if (explicit && v.source_markdown_slug === row.slug && v.row_num !== null) {
+      if (await isFactWithdrawn(db, row.source_id, v.visibility as 'private' | 'world', String(v.fact), row.slug)) {
+        out.push({ id: f.id, action: 'skip', reason: 'withdrawn' });
+      } else out.push({ id: f.id, action: 'align', value: v });
+      continue;
+    }
     const visibility = v.visibility as 'private' | 'world';
     if (!roundTrips(v, appendContextNote(v.context as string | null, f.note))) {
       out.push({ id: f.id, action: 'skip', reason: 'claim_unfenceable' });
@@ -144,6 +173,7 @@ async function classify(db: BrainEngine, row: WriteRequest, intent: RelinkIntent
 }
 
 const classKey = (c: Classified[]) => JSON.stringify(c.map(x => x.action === 'link' ? [x.id, 'link']
+  : x.action === 'align' ? [x.id, 'align']
   : x.action === 'retire' ? [x.id, 'retire', x.duplicateOf] : [x.id, 'skip', x.reason]));
 
 export async function prepareRelinkMutation(engine: BrainEngine, row: WriteRequest, config: GBrainConfig): Promise<PreparedMutation> {
@@ -153,7 +183,7 @@ export async function prepareRelinkMutation(engine: BrainEngine, row: WriteReque
     `${row.slug} or one of its facts changed while relink request ${row.request_id} was being prepared, so nothing was written. ${rerun}`);
   if (row.operation !== RELINK_OPERATION || intent?.kind !== 'relink_facts' || !Array.isArray(intent.facts) || row.authority.remote) {
     throw opError('permission_denied', 'Unsupported relink intent.',
-      `Request ${row.request_id} is not a trusted local relink this gbrain version can publish, so nothing was written. Facts relink runs only from gbrain facts relink on the brain host.`);
+      `Request ${row.request_id} is not a trusted local relink this gbrain version can publish, so nothing was written. Facts relink runs only from gbrain facts relink or gbrain facts link on the brain host.`);
   }
   const snapshot = await engine.readPageSnapshot(row.slug, { sourceId: row.source_id });
   if (!snapshot || snapshot.page.id !== row.page_id) {
@@ -196,21 +226,39 @@ export async function prepareRelinkMutation(engine: BrainEngine, row: WriteReque
   };
   const apply = async (tx: BrainEngine): Promise<Record<string, unknown>> => {
     const outcome: RelinkGroupOutcome = { linked: [], deduped: [], skipped: [], queued: 0 };
-    const guard = 'WHERE source_id=$1 AND id=$2 AND entity_slug IS NULL AND row_num IS NULL AND source_markdown_slug IS NULL AND expired_at IS NULL RETURNING id';
+    const explicit = intent.explicit === true;
+    // Inferred relink only adopts a still-unlinked row. An explicit link pins the
+    // entity the operator saw (null or a wrong slug) so a concurrent retarget refuses.
+    const unlinkedGuard = 'WHERE source_id=$1 AND id=$2 AND entity_slug IS NULL AND row_num IS NULL AND source_markdown_slug IS NULL AND expired_at IS NULL RETURNING id';
+    // Link binds context at $5 and the pinned entity at $6; retire binds context at $4 and the entity at $5.
+    const linkGuard = explicit
+      ? 'WHERE source_id=$1 AND id=$2 AND entity_slug IS NOT DISTINCT FROM $6 AND row_num IS NULL AND source_markdown_slug IS NULL AND expired_at IS NULL RETURNING id'
+      : unlinkedGuard;
+    const retireGuard = explicit
+      ? 'WHERE source_id=$1 AND id=$2 AND entity_slug IS NOT DISTINCT FROM $5 AND row_num IS NULL AND source_markdown_slug IS NULL AND expired_at IS NULL RETURNING id'
+      : unlinkedGuard;
+    const pinned = (f: RelinkIntentFact, rest: unknown[]) => explicit ? [...rest, f.from_entity ?? null] : rest;
     // Rows take their fence positions before the page projection runs, so the
     // projection matches them by (source, page, row_num) instead of inserting twins.
     for (const c of planned) {
       const f = byId.get(c.id)!;
       if (c.action === 'link') {
         const rowNum = rowNums.get(c.id)!;
-        const moved = await tx.executeRaw(`UPDATE facts SET entity_slug=$3, source_markdown_slug=$3, row_num=$4::integer, context=$5 ${guard}`,
-          [row.source_id, c.id, row.slug, rowNum, appendContextNote(c.value.context as string | null, f.note)]);
+        const moved = await tx.executeRaw(`UPDATE facts SET entity_slug=$3, source_markdown_slug=$3, row_num=$4::integer, context=$5 ${linkGuard}`,
+          pinned(f, [row.source_id, c.id, row.slug, rowNum, appendContextNote(c.value.context as string | null, f.note)]));
         if (moved.length !== 1) throw changed('A relinked fact was moved by another writer.');
         outcome.linked.push({ id: c.id, row_num: rowNum });
+      } else if (c.action === 'align') {
+        const aligned = await tx.executeRaw(
+          `UPDATE facts SET entity_slug=$3, context=$4 WHERE source_id=$1 AND id=$2 AND entity_slug IS NOT DISTINCT FROM $5
+             AND source_markdown_slug=$3 AND row_num IS NOT NULL AND expired_at IS NULL RETURNING id`,
+          [row.source_id, c.id, row.slug, appendContextNote(c.value.context as string | null, f.note), f.from_entity ?? null]);
+        if (aligned.length !== 1) throw changed('A relinked fact was moved by another writer.');
+        outcome.linked.push({ id: c.id, row_num: Number(c.value.row_num) });
       } else if (c.action === 'retire') {
         const [current] = await tx.executeRaw<{ context: string | null }>('SELECT context FROM facts WHERE source_id=$1 AND id=$2', [row.source_id, c.id]);
-        const retired = await tx.executeRaw(`UPDATE facts SET entity_slug=$3, expired_at=now(), context=$4 ${guard}`,
-          [row.source_id, c.id, row.slug, appendContextNote(current?.context ?? null, `${f.note} (duplicate of #${c.duplicateOf})`)]);
+        const retired = await tx.executeRaw(`UPDATE facts SET entity_slug=$3, expired_at=now(), context=$4 ${retireGuard}`,
+          pinned(f, [row.source_id, c.id, row.slug, appendContextNote(current?.context ?? null, `${f.note} (duplicate of #${c.duplicateOf})`)]));
         if (retired.length !== 1) throw changed('A relinked fact was moved by another writer.');
         outcome.deduped.push({ id: c.id, duplicate_of: c.duplicateOf });
       } else {
@@ -225,7 +273,7 @@ export async function prepareRelinkMutation(engine: BrainEngine, row: WriteReque
         VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, now())
         ON CONFLICT (source_id, fact_id) DO UPDATE SET outcome=EXCLUDED.outcome, reason=NULL, tier=EXCLUDED.tier, model=EXCLUDED.model,
           target_slug=EXCLUDED.target_slug, run_id=EXCLUDED.run_id, attempted_at=EXCLUDED.attempted_at`,
-      [row.source_id, c.id, c.action === 'link' ? 'linked' : 'deduped', f.tier, f.model, row.slug, intent.run_id]);
+      [row.source_id, c.id, c.action === 'retire' ? 'deduped' : 'linked', f.tier, f.model, row.slug, intent.run_id]);
     }
     if (intent.queue_conflict && outcome.linked.length) {
       const { enqueueRelinked } = await import('../ai/decide/proposals-store.ts');
@@ -242,12 +290,13 @@ export type RelinkGroupResult =
   | { ok: false; reason: 'revision_conflict' | 'fence_malformed' | 'page_file_missing' | 'unfenceable' | 'no_page'; message: string };
 
 /**
- * Admit and wait for one entity page's relink request. Local and trusted
- * only. The request id derives from the run and the pinned facts, so a retry
- * inside one run replays its receipt and a later run never reuses it.
+ * Admit and wait for one page's trusted-local fact publication. The request id
+ * derives from `keyMaterial`, so a retry inside one run replays its receipt.
+ * Relink's key material stays `{ sourceId, slug, run, facts: [id, hash] }` so
+ * an in-flight relink request still replays after this process restarts.
  */
-export async function submitRelinkGroup(engine: BrainEngine, config: GBrainConfig, sourceId: string, slug: string,
-  intent: RelinkIntent): Promise<RelinkGroupResult> {
+export async function admitFactPageIntent(engine: BrainEngine, config: GBrainConfig, sourceId: string, slug: string,
+  operation: string, intent: Record<string, unknown>, keyMaterial: unknown): Promise<RelinkGroupResult> {
   const { initializeLocalPersistence, requestPrincipalForContext } = await import('../persistence/page-mutations.ts');
   const { submissionAuthority } = await import('../persistence/authority.ts');
   const { admitWrite, getWriteRequest } = await import('../persistence/journal.ts');
@@ -260,21 +309,21 @@ export async function submitRelinkGroup(engine: BrainEngine, config: GBrainConfi
   const [source] = await engine.executeRaw<{ incarnation: string; archived: boolean; local_path: string | null; kind: string | null }>(
     "SELECT incarnation, archived, local_path, config->>'kind' AS kind FROM sources WHERE id = $1", [sourceId]);
   if (!source || source.archived) {
-    throw opError('source_changed', 'The relink source is not active.', `Source ${sourceId} is archived or not registered; run gbrain facts relink with --source set to an active source.`,
+    throw opError('source_changed', 'The fact source is not active.', `Source ${sourceId} is archived or not registered; rerun gbrain facts with --source set to an active source.`,
       { fix: { argv: ['gbrain', 'sources', 'list', '--json'], consent: [], actor: 'agent', why: 'Lists the registered sources and whether each is archived.', requires_exclusive: false } });
   }
   const snapshot = await engine.readPageSnapshot(slug, { sourceId });
   if (!snapshot) return { ok: false, reason: 'no_page', message: `${slug} no longer exists` };
   const target = await resolveFactWriteTarget(engine, sourceId, source);
   if (target.kind === 'unbound') return { ok: false, reason: 'unfenceable', message: `source ${sourceId} writes through to ${target.root} but has no canonical owner` };
-  const authority = await submissionAuthority(ctx, RELINK_OPERATION, sourceId, source.incarnation, slug);
+  const authority = await submissionAuthority(ctx, operation, sourceId, source.incarnation, slug);
   if (target.databaseOnlyReason) authority.databaseOnlyReason = target.databaseOnlyReason;
-  const key = digest({ sourceId, slug, run: intent.run_id, facts: intent.facts.map(f => [f.id, f.hash]) });
+  const key = digest(keyMaterial);
   const requestId = `${key.slice(0, 8)}-${key.slice(8, 12)}-4${key.slice(13, 16)}-a${key.slice(17, 20)}-${key.slice(20, 32)}`;
   try {
     const row = await getWriteRequest(engine, principal, requestId) ?? await admitWrite(engine, {
-      principal, operation: RELINK_OPERATION, sourceId, sourceIncarnation: source.incarnation, slug, pageId: snapshot.page.id,
-      requestId, callerIntent: intent as unknown as Record<string, unknown>, intent: intent as unknown as Record<string, unknown>, authority,
+      principal, operation, sourceId, sourceIncarnation: source.incarnation, slug, pageId: snapshot.page.id,
+      requestId, callerIntent: intent, intent, authority,
       worktreeId: target.binding?.worktree_id ?? null, topologyGeneration: target.binding?.topology_generation ?? null,
     });
     const finished = await waitForWrite(engine, row, config, 60_000);
@@ -283,10 +332,17 @@ export async function submitRelinkGroup(engine: BrainEngine, config: GBrainConfi
   } catch (error) {
     if (!(error instanceof OperationError)) throw error;
     const message = error.message;
-    if (/fence_malformed/.test(message)) return { ok: false, reason: 'fence_malformed', message };
+    if (/fence_malformed|fence_drift/.test(message)) return { ok: false, reason: /fence_drift/.test(message) ? 'revision_conflict' : 'fence_malformed', message };
     if (error.code === 'owner_unavailable') return { ok: false, reason: 'unfenceable', message };
     if (error.code === 'source_changed' && /removed outside/.test(message)) return { ok: false, reason: 'page_file_missing', message };
     if (['revision_conflict', 'page_identity_changed', 'source_changed'].includes(error.code)) return { ok: false, reason: 'revision_conflict', message };
     throw error;
   }
+}
+
+/** Admit and wait for one entity page's relink request. Local and trusted only. */
+export async function submitRelinkGroup(engine: BrainEngine, config: GBrainConfig, sourceId: string, slug: string,
+  intent: RelinkIntent): Promise<RelinkGroupResult> {
+  return admitFactPageIntent(engine, config, sourceId, slug, RELINK_OPERATION, intent as unknown as Record<string, unknown>,
+    { sourceId, slug, run: intent.run_id, facts: intent.facts.map(f => [f.id, f.hash]) });
 }
