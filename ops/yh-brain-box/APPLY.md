@@ -24,12 +24,13 @@ Serve on `:18792` is box runtime. `gbrain-restart-serves.sh` remains the owner. 
 
 ```bash
 install -d /home/box/brain-os/bin /home/box/brain-os/scripts /home/box/brain-os/state /home/box/brain-os/logs /home/box/brain-os/backups/wiki
-install -m 0755 ops/yh-brain-box/bin/gbrain-dream-nightly.sh /home/box/brain-os/bin/
-install -m 0755 ops/yh-brain-box/bin/backup-push.sh /home/box/brain-os/bin/
-install -m 0755 ops/yh-brain-box/bin/gbrain-multi-source-delta.sh /home/box/brain-os/bin/
-install -m 0755 ops/yh-brain-box/bin/notion-delta.sh /home/box/brain-os/bin/
-install -m 0755 ops/yh-brain-box/bin/pipeline-digest.sh /home/box/brain-os/bin/
-install -m 0755 ops/yh-brain-box/bin/gbrain-daily-hygiene.sh /home/box/brain-os/bin/
+# Repo path is scripts/ because this repo gitignores bin/. Destination is the box bin/.
+install -m 0755 ops/yh-brain-box/scripts/gbrain-dream-nightly.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/backup-push.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/gbrain-multi-source-delta.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/notion-delta.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/pipeline-digest.sh /home/box/brain-os/bin/
+install -m 0755 ops/yh-brain-box/scripts/gbrain-daily-hygiene.sh /home/box/brain-os/bin/
 install -m 0644 ops/yh-brain-box/lib/box-ops-common.sh /home/box/brain-os/scripts/box-ops-common.sh
 ```
 

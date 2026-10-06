@@ -6,7 +6,7 @@ umask 077
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 OPS="$ROOT/ops/yh-brain-box"
-BIN="$OPS/bin"
+BIN="$OPS/scripts"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -22,12 +22,12 @@ check() {
   fi
 }
 
-for script in "$OPS"/bin/*.sh "$OPS"/lib/box-ops-common.sh "$OPS"/test/smoke.sh; do
+for script in "$OPS"/scripts/*.sh "$OPS"/lib/box-ops-common.sh "$OPS"/test/smoke.sh; do
   bash -n "$script"
 done
 printf 'ok bash -n\n'
 
-if grep -nE 'git push([^\\]|\\[[:space:]])*--force|git push -f' "$OPS"/bin/*.sh "$OPS"/lib/*.sh; then
+if grep -nE 'git push([^\\]|\\[[:space:]])*--force|git push -f' "$OPS"/scripts/*.sh "$OPS"/lib/*.sh; then
   echo "FAIL force-push present" >&2
   fail=1
 else
