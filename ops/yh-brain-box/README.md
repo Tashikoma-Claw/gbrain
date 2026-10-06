@@ -6,6 +6,9 @@ The live wiki is local PGLite at `/home/box/.gbrain/wiki.pglite`, source `defaul
 
 Nothing in this repo runs dream. Copy the scripts onto the box using [APPLY.md](APPLY.md).
 
+Phase 2 adds a short serve-stop lock, hot-pack rebuild, capped stale embed, hub diff, ingest-tail and page-split helpers, a version check aimed at gbrain 0.60.82, and a 20-ask retrieval stub. The apply steps and rollback are in APPLY.md.
+
 ```bash
 bash ops/yh-brain-box/test/smoke.sh
+bash ops/yh-brain-box/test/smoke-phase2.sh
 ```

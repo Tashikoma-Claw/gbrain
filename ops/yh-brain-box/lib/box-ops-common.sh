@@ -40,13 +40,22 @@ box_ops_load() {
   : "${AGENTMAIL_PATH:=$VAULT_PATH/agentmail}"
   : "${STATE_DIR:=$BRAIN_OS/state}"
   : "${LOG_DIR:=$BRAIN_OS/logs}"
+  # Long lock: dream and Loop. Does not by itself stop serve.
   : "${LOCK_FILE:=$STATE_DIR/brain-ops.lock}"
+  # Short lock: the single PGLite writer / serve-stop window.
+  : "${DB_LOCK_FILE:=$STATE_DIR/brain-ops-db.lock}"
+  : "${SERVE_GAP_MAX_SECONDS:=1200}"
+  : "${EMBED_CAP:=200}"
+  : "${HOT_PACK_OUT:=/home/box/codex-harness/g2-sync/hot-packs/accounts.slim.json}"
+  : "${HOT_PACK_APPROVAL:=$STATE_DIR/hot-pack-approve.json}"
+  : "${TARGET_GBRAIN_VERSION:=0.60.82}"
   : "${BACKUP_DIR:=$BRAIN_OS/backups/wiki}"
   : "${GBRAIN_SERVE_PORT:=18792}"
   : "${RESTART_SERVES:=$BRAIN_OS/bin/gbrain-restart-serves.sh}"
   : "${SG_ENV:=${HOME:-/home/box}/.gbrain/sg.env}"
   : "${APPROVAL_FILE:=$STATE_DIR/multi-source-approve.json}"
   : "${BRAIN_ID:=host}"
+  : "${HUB_GLOBS:=crm/client-*.md,crm/project-*.md,projects/*.md,clients/*.md}"
   mkdir -p "$STATE_DIR" "$LOG_DIR"
 }
 
@@ -67,6 +76,12 @@ box_ops_load_sg_env() {
     box_ops_log "WARN: ZHIPUAI_API_KEY is unset after sourcing sg.env"
   else
     box_ops_log "sg.env has ZHIPUAI_API_KEY (value not printed)"
+  fi
+  # Embeddings on this box stay on Voyage. Zhipu is for facts and chat.
+  if [[ -z "${VOYAGE_API_KEY:-}" ]]; then
+    box_ops_log "WARN: VOYAGE_API_KEY is unset after sourcing sg.env (embeddings stay on Voyage)"
+  else
+    box_ops_log "sg.env has VOYAGE_API_KEY (value not printed)"
   fi
 }
 
@@ -114,12 +129,26 @@ print("ok")
 PY
 }
 
-box_ops_gbrain() {
+box_ops_gbrain_bin() {
   if [[ -n "${GBRAIN_BIN:-}" ]]; then
-    "$GBRAIN_BIN" "$@"
+    printf '%s\n' "$GBRAIN_BIN"
   else
-    command gbrain "$@"
+    command -v gbrain
   fi
+}
+
+box_ops_gbrain() {
+  "$(box_ops_gbrain_bin)" "$@"
+}
+
+# Like box_ops_gbrain, but a limited serve-stop window kills the CLI
+# process at SERVE_GAP_MAX_SECONDS. Dream leaves the mode unlimited.
+box_ops_gbrain_bounded() {
+  if [[ "${BOX_OPS_SERVE_MODE:-limited}" == "unlimited" ]]; then
+    box_ops_gbrain "$@"
+    return $?
+  fi
+  box_ops_run_bounded "$(box_ops_gbrain_bin)" "$@"
 }
 
 box_ops_reject_retired_url() {
@@ -163,22 +192,170 @@ box_ops_lock_prepare() {
   exec 9>>"$LOCK_FILE"
 }
 
+box_ops_lock_db_prepare() {
+  box_ops_load
+  mkdir -p "$(dirname "$DB_LOCK_FILE")"
+  exec 8>>"$DB_LOCK_FILE"
+}
+
 box_ops_lock_nowait() {
   box_ops_lock_prepare
   if ! flock -n 9; then
     box_ops_log "lock held: $LOCK_FILE"
     return 1
   fi
+  box_ops_log "long lock acquired: $LOCK_FILE"
 }
 
 box_ops_lock_wait() {
   local seconds="${1:-5400}"
   box_ops_lock_prepare
-  box_ops_log "waiting up to ${seconds}s for $LOCK_FILE"
+  box_ops_log "long lock wait ${seconds}s: $LOCK_FILE"
   if ! flock -w "$seconds" 9; then
     box_ops_log "lock timeout: $LOCK_FILE"
     return 1
   fi
+  box_ops_log "long lock acquired: $LOCK_FILE"
+}
+
+box_ops_lock_db_wait() {
+  local seconds="${1:-1200}"
+  box_ops_lock_db_prepare
+  box_ops_log "db lock wait ${seconds}s: $DB_LOCK_FILE"
+  if ! flock -w "$seconds" 8; then
+    box_ops_log "db lock timeout: $DB_LOCK_FILE"
+    return 1
+  fi
+  box_ops_log "db lock acquired: $DB_LOCK_FILE mode=${BOX_OPS_SERVE_MODE:-limited}"
+}
+
+# Limited serve-stop windows clamp to 20 minutes. Dream passes unlimited.
+box_ops_serve_gap_max() {
+  local max="${SERVE_GAP_MAX_SECONDS:-1200}"
+  if [[ "$max" -gt 1200 && "${SERVE_GAP_OVERRIDE:-}" != "1" ]]; then
+    box_ops_log "SERVE_GAP clamped from ${max}s to 1200s"
+    max=1200
+  fi
+  printf '%s\n' "$max"
+}
+
+box_ops_serve_restart_if_needed() {
+  box_ops_load
+  local rc=0
+  if [[ "${serve_stopped:-0}" == "1" && "${serve_restarted:-0}" == "0" ]]; then
+    serve_restarted=1
+    rm -f "$STATE_DIR/serve-stopped-pid" "$STATE_DIR/serve-stopped-at"
+    box_ops_start_wiki_serve || rc=1
+  elif [[ -f "$STATE_DIR/serve-stopped-pid" ]]; then
+    box_ops_log "serve stamp left behind; restarting :${GBRAIN_SERVE_PORT}"
+    rm -f "$STATE_DIR/serve-stopped-pid" "$STATE_DIR/serve-stopped-at"
+    box_ops_start_wiki_serve || rc=1
+  fi
+  return "$rc"
+}
+
+box_ops_serve_guard_exit() {
+  local rc=$?
+  trap - EXIT INT TERM
+  box_ops_serve_restart_if_needed || rc=1
+  if [[ -n "${BOX_OPS_EXIT_HOOK:-}" ]] && declare -F "$BOX_OPS_EXIT_HOOK" >/dev/null 2>&1; then
+    "$BOX_OPS_EXIT_HOOK" "$rc" || true
+  fi
+  exit "$rc"
+}
+
+box_ops_serve_guard_on() {
+  trap box_ops_serve_guard_exit EXIT INT TERM
+}
+
+# mode is "limited" (default, ≤20 min) or "unlimited" (dream window only).
+box_ops_serve_stop_begin() {
+  local mode="${1:-limited}"
+  local wait_s="${2:-${DB_LOCK_WAIT_SECONDS:-1200}}"
+  box_ops_load
+  BOX_OPS_SERVE_MODE="$mode"
+  if ! box_ops_lock_db_wait "$wait_s"; then
+    return 1
+  fi
+  if ! box_ops_stop_wiki_serve; then
+    return 1
+  fi
+  serve_stopped=1
+  serve_restarted=0
+  date +%s > "$STATE_DIR/serve-stopped-at"
+  printf '%s\n' "$$" > "$STATE_DIR/serve-stopped-pid"
+  box_ops_log "serve stopped mode=$mode lock=$DB_LOCK_FILE"
+}
+
+# Run a command inside a limited serve-stop window. `timeout` kills that
+# command, not the shell: a trapped shell does not notice TERM until its
+# foreground child exits. Unlimited (dream) runs the command as-is.
+box_ops_run_bounded() {
+  local max rc
+  if [[ "${BOX_OPS_SERVE_MODE:-limited}" == "unlimited" ]]; then
+    "$@"
+    return $?
+  fi
+  max=$(box_ops_serve_gap_max)
+  if ! command -v timeout >/dev/null 2>&1; then
+    box_ops_log "WARN: timeout(1) missing; the ${max}s serve gap is not enforced on this command"
+    "$@"
+    return $?
+  fi
+  set +e
+  timeout --signal=TERM "$max" "$@"
+  rc=$?
+  set -e
+  if [[ "$rc" == "124" ]]; then
+    box_ops_log "SERVE_GAP_EXCEEDED command timed out after ${max}s"
+  fi
+  return "$rc"
+}
+
+box_ops_serve_stop_end() {
+  local rc=0
+  local mode="${BOX_OPS_SERVE_MODE:-limited}"
+  if [[ "$mode" != "unlimited" && -f "${STATE_DIR:-}/serve-stopped-at" ]]; then
+    local start now max elapsed
+    start=$(cat "$STATE_DIR/serve-stopped-at")
+    now=$(date +%s)
+    max=$(box_ops_serve_gap_max)
+    elapsed=$((now - start))
+    if [[ "$elapsed" -gt "$max" ]]; then
+      box_ops_log "SERVE_GAP_EXCEEDED elapsed=${elapsed}s max=${max}s"
+      rc=1
+    fi
+  fi
+  box_ops_serve_restart_if_needed || rc=1
+  rm -f "${STATE_DIR:-}/serve-stopped-pid" "${STATE_DIR:-}/serve-stopped-at" || true
+  return "$rc"
+}
+
+# Embed argv for the hourly stale pass. Never --all, never --catch-up.
+box_ops_embed_stale_args() {
+  local cap="${EMBED_CAP:-200}"
+  if [[ ! "$cap" =~ ^[0-9]+$ ]] || [[ "$cap" -lt 1 ]]; then
+    box_ops_log "REFUSED EMBED_CAP=$cap"
+    return 1
+  fi
+  if [[ "$cap" -gt 200 && "${EMBED_CAP_OVERRIDE:-}" != "1" ]]; then
+    box_ops_log "REFUSED EMBED_CAP=$cap above 200 without EMBED_CAP_OVERRIDE=1"
+    return 1
+  fi
+  EMBED_ARGS=(embed --stale --source default --batch-size "$cap" --priority recent --json)
+  if [[ -n "${EMBED_MAX_USD:-}" ]]; then
+    EMBED_ARGS+=(--max-usd "$EMBED_MAX_USD")
+  fi
+  if [[ "${EMBED_CONSENT:-}" == "yes" ]]; then
+    EMBED_ARGS+=(--yes)
+  fi
+  local flag
+  for flag in "${EMBED_ARGS[@]}"; do
+    if [[ "$flag" == "--all" || "$flag" == "--catch-up" ]]; then
+      box_ops_log "REFUSED embed flag $flag"
+      return 1
+    fi
+  done
 }
 
 box_ops_serve_pids() {

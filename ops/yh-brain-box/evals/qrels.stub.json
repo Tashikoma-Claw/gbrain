@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "status": "stub",
+  "note": "Empty relevant_slugs are not a retrieval score. Copy slugs from the live wiki into queries.jsonl, then mirror them here. Run gbrain eval retrieval-quality on the box, not in CI.",
+  "queries": [
+    {"query_id": "q01", "query": "Acme Example client hub", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q02", "query": "Widget Co project hub", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q03", "query": "Example renewal note", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q04", "query": "Cedar example account page", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q05", "query": "the payments client we track in crm", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q06", "query": "our logistics project hub", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q07", "query": "the founder page for the example company", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q08", "query": "short name for the acme-example account", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q09", "query": "nickname for the widget-co project", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q10", "query": "what we call fund-a in the crm", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q11", "query": "long client history for acme-example", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q12", "query": "multi section project plan for widget-co", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q13", "query": "acme mrr", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q14", "query": "what is the monthly revenue note on the acme-example client hub", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q15", "query": "who works with alice-example on the widget-co project", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q16", "query": "which project is charlie-example waiting on", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q17", "query": "open commercial commitment with no owner", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q18", "query": "stale embedding backlog on the wiki", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q19", "query": "password for the example account", "relevant_slugs": [], "first_relevant_slug": ""},
+    {"query_id": "q20", "query": "api key stored in the example vault", "relevant_slugs": [], "first_relevant_slug": ""}
+  ]
+}

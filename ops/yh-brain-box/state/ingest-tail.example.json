@@ -1,0 +1,6 @@
+{
+  "stuck": true,
+  "source_id": "vault",
+  "since": "2026-10-04T00:00:00+08:00",
+  "case": "2026-10-04 ingest tail stopped before the last sync batch and link extract finished"
+}

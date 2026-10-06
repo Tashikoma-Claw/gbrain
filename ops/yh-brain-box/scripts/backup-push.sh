@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Fast-forward push of the vault and the wiki checkout, then an optional
-# local PGLite snapshot. Never force-pushes. Holds the same lock as dream
-# so a 03:17 run waits out a 02:28 dream.
+# local PGLite snapshot. Never force-pushes. Waits on the long dream lock
+# so a 03:17 run waits out a 02:28 dream. The snapshot itself takes the
+# short DB lock and keeps serve down for at most 20 minutes.
 #
 # Git remotes: private Tashikoma-Claw/YH-Brain and YH-Brain-wiki only.
 # The database archive is gbrain backup create, kept outside both checkouts.
@@ -50,29 +51,18 @@ if [[ "${BACKUP_CREATE:-1}" == "1" ]]; then
       mkdir -p "$BACKUP_DIR"
       chmod 700 "$BACKUP_DIR" || true
       archive="$BACKUP_DIR/wiki-$(date +%Y%m%d-%H%M%S).gbrain-backup"
-      serve_stopped=0
-      serve_restarted=0
-      cleanup() {
-        local rc=$?
-        if [[ "$serve_stopped" == "1" && "$serve_restarted" == "0" ]]; then
-          serve_restarted=1
-          box_ops_start_wiki_serve || rc=1
-        fi
-        exit "$rc"
-      }
-      trap cleanup EXIT
+      box_ops_serve_guard_on
       if ! box_ops_preflight_pglite "$WIKI_HOME" "$WIKI_PGLITE"; then
         fail=1
+      elif ! box_ops_serve_stop_begin limited "${BACKUP_DB_LOCK_WAIT_SECONDS:-1200}"; then
+        fail=1
       else
-        box_ops_stop_wiki_serve
-        serve_stopped=1
         export GBRAIN_HOME="$WIKI_HOME"
         box_ops_log "gbrain backup create --output $archive"
-        if ! box_ops_gbrain backup create --output "$archive"; then
+        if ! box_ops_gbrain_bounded backup create --output "$archive"; then
           fail=1
         fi
-        box_ops_start_wiki_serve || fail=1
-        serve_restarted=1
+        box_ops_serve_stop_end || fail=1
         # Keep the newest BACKUP_KEEP archives in this directory only.
         mapfile -t old < <(ls -1t "$BACKUP_DIR"/wiki-*.gbrain-backup 2>/dev/null || true)
         keep="${BACKUP_KEEP:-7}"
