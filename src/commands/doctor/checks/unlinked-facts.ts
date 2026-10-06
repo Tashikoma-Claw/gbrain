@@ -126,8 +126,8 @@ export function unlinkedFactsVerdict(stats: UnlinkedFactsStats | null, opts: { t
   const unlinkedNew = recent.unlinked - recent.no_subject;
   const warn = eligible >= UNLINKED_NEW_MIN_FACTS && unlinkedNew / eligible > UNLINKED_NEW_SHARE_WARN;
   const hint = opts.thinClient
-    ? 'ask the brain host operator to run: gbrain facts relink --dry-run'
-    : 'preview links: gbrain facts relink --dry-run';
+    ? 'ask the brain host operator to run: gbrain facts relink --dry-run, or gbrain facts link --dry-run for a reviewed mapping'
+    : 'preview links: gbrain facts relink --dry-run, or apply a reviewed mapping with gbrain facts link --dry-run';
   if (w.active === 0 && recent.facts === 0) return { status: 'ok', message: 'No active facts yet; nothing to link.', details: { ...stats, fix: hint } };
   const parts = [
     `${pct(w.unlinked, w.active)} of ${w.active} active facts have no entity (${w.unlinked}${w.capped ? `; newest ${UNLINKED_WINDOW_PER_SOURCE} per source` : ''}; ${w.fence_owned} fence-owned)`,

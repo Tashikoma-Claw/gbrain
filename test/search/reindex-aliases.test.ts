@@ -8,6 +8,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:tes
 import { PGLiteEngine } from '../../src/core/pglite-engine.ts';
 import { resetPgliteState } from '../helpers/reset-pglite.ts';
 import { runReindexAliases } from '../../src/commands/reindex-aliases.ts';
+import { managedBrain } from '../helpers/managed-brain.ts';
 
 let engine: PGLiteEngine;
 
@@ -61,5 +62,22 @@ describe('runReindexAliases', () => {
     const m = await engine.resolveAliases(['alpha', 'beta'], { sourceId: 'default' });
     expect((m.get('alpha') ?? []).map(r => r.slug)).toEqual(['p/y']);
     expect((m.get('beta') ?? []).map(r => r.slug)).toEqual(['p/y']);
+  });
+});
+
+test('managed brain: frontmatter aliases go through the coordinator', async () => {
+  await managedBrain(async ({ engine: managed }) => {
+    await expect(managed.executeRaw(
+      `INSERT INTO page_aliases (source_id, alias_norm, slug, origin) VALUES ('default', 'hall of light', 'projects/acme-example', 'frontmatter')`,
+    )).rejects.toThrow(/writer_coordinator_required/);
+    const result = await runReindexAliases(managed, ['--source', 'default', '--json']);
+    expect(result.dry_run).toBe(false);
+    expect(result.aliases_written).toBeGreaterThanOrEqual(1);
+    const m = await managed.resolveAliases(['hall of light'], { sourceId: 'default' });
+    expect((m.get('hall of light') ?? []).map(r => r.slug)).toEqual(['projects/acme-example']);
+  }, {
+    setup: async ({ engine: setup }) => {
+      await setup.putPage('projects/acme-example', { type: 'note' as never, title: 'Acme Example', compiled_truth: 'x', frontmatter: { aliases: ['Hall of Light'] } });
+    },
   });
 });

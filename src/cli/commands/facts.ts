@@ -19,7 +19,7 @@ export async function run(args: string[], ctx: CliDispatchContext): Promise<void
     const flag = args.indexOf('--source');
     const sourceId = await resolveSourceId(eng, flag >= 0 ? args[flag + 1] : null);
     if (sourceId === ALL_SOURCES) {
-      console.error('gbrain facts relink repairs one source at a time; pass --source <id>.');
+      console.error('gbrain facts repairs one source at a time; pass --source <id>.');
       setCliExitVerdict(1);
       return;
     }

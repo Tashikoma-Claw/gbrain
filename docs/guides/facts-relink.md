@@ -92,12 +92,46 @@ entity page and rerunning links facts that name it.
 
 ### Fix a wrong link
 
-`--json` lists the facts each run linked. To move one, forget it and remember
-it again with the right entity:
+`--json` lists the facts each run linked. To point a fact at a page you
+already have, use `gbrain facts link`. It does not call a model, and it does
+not create a page.
+
+**Say to your agent:** *"Point fact 48211 at people/alice-example. Show me the dry run first."*
 
 ```bash
-gbrain forget <fact-id>
-gbrain remember "<the fact>" --provenance "<source>" --entity <slug>
+gbrain facts link 48211 people/alice-example --dry-run
+gbrain facts link 48211 people/alice-example
+```
+
+A reviewed batch is a JSONL file, one object per line:
+
+```json
+{"fact_id": 48211, "slug": "people/alice-example"}
+{"fact_id": 48212, "slug": "companies/acme-example"}
+```
+
+```bash
+gbrain facts link --file mappings.jsonl --source <id> --dry-run
+gbrain facts link --file mappings.jsonl --source <id>
+```
+
+`--file -` reads that JSONL from stdin. The target page must already exist in
+the same source. A fact that is already on another page's `## Facts` fence is
+moved off that fence and onto the named page; its id, embedding and provenance
+stay. An exact duplicate of a fact the page already has is retired (expired,
+kept in history). The attempt is recorded the same way relink records one
+(`fact_relink_attempts`, tier `explicit`), and `gbrain doctor`'s
+`unlinked_facts` count drops once `entity_slug` is set.
+
+On a brain that is still running an older binary, run this checkout's CLI
+against that brain. The command uses tables that brain already has; it does
+not need a schema migration. On PGLite, stop `gbrain serve` first or the
+command fails with `pglite_busy` (the database file has one owner). On a
+managed brain the write goes through the same coordinator, so it is safe while
+other coordinated writers run.
+
+```bash
+bun src/cli.ts facts link --file mappings.jsonl --source <id> --dry-run
 ```
 
 ## Why a fact was not linked
@@ -105,9 +139,9 @@ gbrain remember "<the fact>" --provenance "<source>" --entity <slug>
 | Reason | Remembered | What to do |
 |---|---|---|
 | `no_subject` | yes | The model found no single person, company or project in the fact. Nothing to fix; rerun with --retry-model to ask again. |
-| `ambiguous` | yes | The fact names more than one entity, or a name competes with the match. Link it by hand: forget it and remember it again with --entity. |
+| `ambiguous` | yes | The fact names more than one entity, or a name competes with the match. Link it by hand: gbrain facts link <fact-id> <page-slug>. |
 | `unverified_match` | yes | The only match is a bare first name or a name that is not in the fact. Add an alias to the right entity page, then rerun. |
-| `no_mention` | no | The fact names no entity. Rerun with the model tier (drop --no-llm), or link it by hand with remember --entity. |
+| `no_mention` | no | The fact names no entity. Rerun with the model tier (drop --no-llm), or link it by hand: gbrain facts link <fact-id> <page-slug>. |
 | `no_page` | no | The fact names an entity that has no page. Create the entity page, then rerun. |
 | `model_unavailable` | no | The extraction model could not be reached. Configure it with gbrain config set facts.extraction_model <provider:model>. To skip the model tier, run gbrain facts relink --no-llm. |
 | `model_unparseable` | no | The model returned output relink could not read. Rerun; if it persists, set a different facts.extraction_model. |
@@ -117,7 +151,7 @@ gbrain remember "<the fact>" --provenance "<source>" --entity <slug>
 | `fence_malformed` | no | The entity page has a malformed ## Facts fence. Repair the fence (gbrain doctor names it), then rerun. |
 | `claim_unfenceable` | no | The claim text cannot be written to a fence row unchanged (for example it is wrapped in ~~). Forget it and remember a cleaned-up claim with --entity. |
 | `visibility_conflict` | no | The entity already has the same claim from the same source with the other visibility, and a page indexes only one. Forget the copy you do not want, then rerun. |
-| `fence_owned` | no | The fact lives in another page fence (a transcript). Relink does not move fence-owned facts. |
+| `fence_owned` | no | The fact lives in another page fence (a transcript). Relink does not move fence-owned facts. To move one onto a page you name, run gbrain facts link <fact-id> <page-slug>. |
 | `budget_exhausted` | no | The model tier reached --max-usd. Raise --max-usd (or pass off) and rerun with the printed continuation command. |
 | `revision_conflict` | no | The fact or the entity page changed while relink ran. Rerun. |
 

@@ -3047,7 +3047,7 @@ TOOLS
   compile-context --target <t>       Compile a deterministic, scanned, budgeted context
         [--budget N] [--check]       file (claude-code | codex | openclaw)
   decide <status|probe|enable|...>   System One decision support (Jev); every slot off by default
-  facts relink [--dry-run]           Link facts saved without an entity to the entity they name
+  facts relink|link [--dry-run]      Link facts to an entity page (relink infers; link sets a page)
   check-resolvable [--json] [--fix]  Validate skill tree (reachability/MECE/DRY)
   report --type <name> --content ... Save timestamped report to brain/reports/
 
